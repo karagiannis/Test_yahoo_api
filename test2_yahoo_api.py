@@ -19,9 +19,14 @@ for ticker in tickers:
     response = requests.get(url, headers=headers)
 
     # Check if the request was successful
+    # Check if the request was successful
     if response.status_code == 200:
         # Parse the JSON response
         data = response.json()
+        # Extract the timezone information from the response
+        exchange_timezone = data['chart']['result'][0]['meta']['exchangeTimezoneName']
+        # Extract the GMT offset
+        gmtoffset = data['chart']['result'][0]['meta']['gmtoffset']
 
         # Extract the timestamp and adjusted close price data
         timestamps = data['chart']['result'][0]['timestamp']
@@ -30,12 +35,19 @@ for ticker in tickers:
         # Create a DataFrame
         df = pd.DataFrame({'Timestamp': timestamps, 'Close': prices['close'], 'Open': prices['open'],
                         'High': prices['high'], 'Low': prices['low'], 'Volume': prices['volume']})
+        
+        if exchange_timezone == 'America/New_York':
+            
+            # Convert timestamps to datetime objects in New York time (EDT)
+            df['Date'] = pd.to_datetime(df['Timestamp'], unit='s', origin='unix', errors='coerce')
+            df['Date'] = df['Date'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        else:
 
-        # Convert timestamps to datetime objects
-        df['Date'] = [datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S') for ts in df['Timestamp']]
+            # Convert timestamps to datetime objects using GMT offset
+            df['Date'] = pd.to_datetime(df['Timestamp'] - gmtoffset, unit='s', origin='unix', errors='coerce', utc=True)
+            df['Date'] = df['Date'].dt.tz_convert('US/Eastern').dt.strftime('%Y-%m-%d %H:%M:%S')
 
-        # Convert to New York time (EDT)
-        df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize('UTC').dt.tz_convert('US/Eastern')
+
 
         # Set "Date" as the index
         df.set_index('Date', inplace=True)
