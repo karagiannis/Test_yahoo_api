@@ -53,18 +53,51 @@ def filter_out_data(start_datetime, stop_datetime, target_df, list_with_indicato
 def update_datetimes_so_they_are_aligned(target_df, list_with_indicator_dfs):
     # Get a set of unique timestamps from the target dataframe
     target_timestamps = set(target_df['timestamp'])
-    
+
+    # Create a list to store modified indicator DataFrames
+    modified_indicator_dfs = []
+
     # Iterate through the indicator dataframes
     for indicator_df in list_with_indicator_dfs:
         # Remove timestamps not present in target_df
+        indicator_df = indicator_df.copy()
         indicator_df.drop(indicator_df[~indicator_df['timestamp'].isin(target_timestamps)].index, inplace=True)
-        
-        # Insert missing timestamps
-        missing_timestamps = target_timestamps - set(indicator_df['timestamp'])
-        for missing_timestamp in missing_timestamps:
-            indicator_df.loc[indicator_df.shape[0]] = {'timestamp': missing_timestamp, 'value': None}
+        modified_indicator_dfs.append(indicator_df)  # Append the modified copy
 
-    return list_with_indicator_dfs
+    # Create a list to store indicators as lists of dictionaries
+    indicators_list_of_dicts = []
+
+    # Iterate through the indicator dataframes and convert to list of dicts
+    for indicator_df in modified_indicator_dfs:
+        indicator_dict_list = indicator_df.to_dict(orient='records')
+        indicators_list_of_dicts.append(indicator_dict_list)
+
+    # Iterate through the indicators and handle different keys
+    for i, indicator_dict_list in enumerate(indicators_list_of_dicts):
+        # Create a prototype empty dictionary based on the keys of the first element
+        prototype_dict = indicator_dict_list[0].copy()
+        for key in prototype_dict.keys():
+            prototype_dict[key] = None
+
+        # Find missing timestamps and add them to each indicator
+        missing_timestamps = target_timestamps - set([record['timestamp'] for record in indicator_dict_list])
+        for missing_timestamp in missing_timestamps:
+            new_record = prototype_dict.copy()
+            new_record['timestamp'] = new_record['timestamp'] = datetime(missing_timestamp.year, missing_timestamp.month, missing_timestamp.day)
+            indicator_dict_list.append(new_record)
+
+    # Convert the updated list of dicts back to dataframes
+    for i, indicator_df in enumerate(modified_indicator_dfs):
+        modified_indicator_dfs[i] = pd.DataFrame(indicators_list_of_dicts[i])
+        if len(list_with_indicator_dfs[i]) != len(target_timestamps):
+            raise ValueError("Length of indicator is not equal to the target")
+
+    return modified_indicator_dfs
+
+
+
+
+
 
 
 import pandas as pd
@@ -92,13 +125,14 @@ import numpy as np
 def interpolate_missing_data(df):
     # Define a list of columns to convert to numeric, excluding the first column ('timestamp')
     columns_to_convert = [col for col in df.columns if col != 'timestamp']
+    print("Columns to convert:", columns_to_convert)
     
     # Convert selected columns to numeric, converting non-numeric values to NaN
     df[columns_to_convert] = df[columns_to_convert].apply(pd.to_numeric, errors='coerce')
     
     # Iterate through each row in the DataFrame
     for index, row in df.iterrows():
-        for column in df.columns:
+        for column in columns_to_convert:
             if pd.isna(row[column]):
                 # Check if there are valid numeric values in adjacent rows
                 if index > 0 and index < len(df) - 1:
@@ -109,6 +143,12 @@ def interpolate_missing_data(df):
                         df.at[index, column] = (prev_value + next_value) / 2
     
     return df
+
+def interpolate_missing_data2(df):
+    # Fill missing values using linear interpolation
+    df.interpolate(method='linear', inplace=True)
+    return df
+
 
 
 
@@ -122,278 +162,135 @@ def interpolate_missing_data(df):
 pd.set_option('display.max_columns', None)
 
 
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
+
 # Read the data from CSV files into separate DataFrames
 df_EURUSD = pd.read_csv('./historical_data/EURUSD_1d.csv')
 df_SPY = pd.read_csv('./historical_data/SPY_1d.csv')
 df_TNX = pd.read_csv('./historical_data/TNX_1d.csv')
 
-
-
-
-#Create datetime objects
 # Convert 'timestamp' column to datetime
 df_EURUSD['timestamp'] = pd.to_datetime(df_EURUSD['timestamp'])
 df_SPY['timestamp'] = pd.to_datetime(df_SPY['timestamp'])
 df_TNX['timestamp'] = pd.to_datetime(df_TNX['timestamp'])
 
-# df_EURUSD.reset_index(drop=True, inplace=True)
-# df_EURUSD.set_index('timestamp', inplace=True)
-
-
-# df_SPY.reset_index(drop=True, inplace=True)
-# df_SPY.set_index('timestamp', inplace=True)
-
-# df_TNX.reset_index(drop=True, inplace=True)
-# df_TNX.set_index('timestamp', inplace=True)
-
-
-# df_EURUSD.to_csv("EURUSD_after_reset.csv")
-# df_SPY.to_csv("SPY_after_reset.csv")
-# df_TNX.to_csv("TNX_after_reset.csv")
-
-#Sort ascending datetimes
+# Sort ascending datetimes
 df_EURUSD = df_EURUSD.sort_values(by='timestamp', ascending=True)
 df_SPY = df_SPY.sort_values(by='timestamp', ascending=True)
 df_TNX = df_TNX.sort_values(by='timestamp', ascending=True)
 
-df_EURUSD.to_csv("EURUSD_after_sort.csv")
-df_SPY.to_csv("SPY_after_sort.csv")
-df_TNX.to_csv("TNX_after_sort.csv")
+# Put the indicators in a list
+indicators = [df_SPY, df_TNX]
 
-#Put the indicators in a list
-indicators = [df_SPY,df_TNX]
-
-#Find stat_datime and stop_datime
+# Find start_datetime and stop_datetime
 start_datetime, stop_datetime = find_cut_off_datetimes(df_EURUSD, indicators)
 
 print("start_datetime, stop_datetime:", start_datetime, stop_datetime)
 
-#Cut off the head and the tail of the timestamp columns
-df_EURUSD, indicators= filter_out_data(start_datetime, stop_datetime, df_EURUSD, indicators)
+# Cut off the head and the tail of the timestamp columns
+df_EURUSD, indicators = filter_out_data(start_datetime, stop_datetime, df_EURUSD, indicators)
 
 
-df_SPY = indicators[0]
-df_TNX = indicators[1]
-#Sort ascending datetimes
+# Insert missing datetimes in the indicators and remove excess timestamps not in the target_df
+indicators = update_datetimes_so_they_are_aligned(df_EURUSD, indicators)
+
+# Clean the indicators from nonsense values
+df_SPY = clean_df_from_nonsense(indicators[0])
+df_TNX = clean_df_from_nonsense(indicators[1])
+
+
+# Sort ascending datetimes
 df_EURUSD = df_EURUSD.sort_values(by='timestamp', ascending=True)
 df_SPY = df_SPY.sort_values(by='timestamp', ascending=True)
 df_TNX = df_TNX.sort_values(by='timestamp', ascending=True)
-
-# df_EURUSD.reset_index(drop=True, inplace=True)
-# df_EURUSD.set_index('timestamp', inplace=True)
-
-# df_SPY.reset_index(drop=True, inplace=True)
-# df_SPY.set_index('timestamp', inplace=True)
-
-# df_TNX.reset_index(drop=True, inplace=True)
-# df_TNX.set_index('timestamp', inplace=True)
-
-
-df_EURUSD.to_csv("EURUSD_head_tail_filtered.csv")
-df_SPY.to_csv("SPY_head-tail_filtered.csv")
-df_TNX.to_csv("TNX_head_tail_filtered.csv")
-
-#Insert missing datetimes in the indicators and remove excess timestamps not in the target_df
-indicators=update_datetimes_so_they_are_aligned(df_EURUSD, indicators)
-#Sort ascending datetimes
-
-
-# Save the DataFrame to a CSV file
-# df_SPY.to_csv('SPY_after_update_datimes.csv', index=False)
-# df_TNX.to_csv('TNX__after_update_datimes.csv', index=False)
-
-df_SPY = indicators[0]
-df_TNX = indicators[1]
-
-#Sort ascending datetimes
-df_EURUSD = df_EURUSD.sort_values(by='timestamp', ascending=True)
-df_SPY = df_SPY.sort_values(by='timestamp', ascending=True)
-df_TNX = df_TNX.sort_values(by='timestamp', ascending=True)
-
-# df_EURUSD.reset_index(drop=True, inplace=True)
-# df_EURUSD.set_index('timestamp', inplace=True)
-
-# df_SPY.reset_index(drop=True, inplace=True)
-# df_SPY.set_index('timestamp', inplace=True)
-
-# df_TNX.reset_index(drop=True, inplace=True)
-# df_TNX.set_index('timestamp', inplace=True)
-
-# df_SPY.to_csv('SPY_before_clean_nonsense.csv', index=False)
-# df_TNX.to_csv('TNX__before_clean_nonsense.csv', index=False)
-
-df_SPY = clean_df_from_nonsense(df_SPY)
-df_TNX = clean_df_from_nonsense(df_TNX)
-
-#Sort ascending datetimes
-df_EURUSD = df_EURUSD.sort_values(by='timestamp', ascending=True)
-df_SPY = df_SPY.sort_values(by='timestamp', ascending=True)
-df_TNX = df_TNX.sort_values(by='timestamp', ascending=True)
-
-# df_EURUSD.reset_index(drop=True, inplace=True)
-# df_EURUSD.set_index('timestamp', inplace=True)
-
-# df_SPY.reset_index(drop=True, inplace=True)
-# df_SPY.set_index('timestamp', inplace=True)
-
-# df_TNX.reset_index(drop=True, inplace=True)
-# df_TNX.set_index('timestamp', inplace=True)
-
-df_SPY.to_csv('SPY_after_clean_nonsense.csv', index=False)
-df_TNX.to_csv('TNX__after_clean_nonsense.csv', index=False)
-
+# Interpolate missing data in the indicators
 df_SPY = interpolate_missing_data(df_SPY)
 df_TNX = interpolate_missing_data(df_TNX)
 
-#Sort ascending datetimes
-df_EURUSD = df_EURUSD.sort_values(by='timestamp', ascending=True)
-df_SPY = df_SPY.sort_values(by='timestamp', ascending=True)
-df_TNX = df_TNX.sort_values(by='timestamp', ascending=True)
+# Call the function for the "SPY" DataFrame
+df_SPY = interpolate_missing_data2(df_SPY)
 
+# Reset index
 df_EURUSD.reset_index(drop=True, inplace=True)
-df_EURUSD.set_index('timestamp', inplace=True)
-
 df_SPY.reset_index(drop=True, inplace=True)
-df_SPY.set_index('timestamp', inplace=True)
-
 df_TNX.reset_index(drop=True, inplace=True)
-df_TNX.set_index('timestamp', inplace=True)
 
-# Save the DataFrame to a CSV file
+# Save the DataFrame to CSV files
 df_EURUSD.to_csv('EURUSD_to_edit.csv')
 df_SPY.to_csv('SPY_to_edit.csv')
 df_TNX.to_csv('TNX_to_edit.csv')
-# Manually edit csv to set the topmost and lowest values as needed
 
-# Read the edited CSV file back into a DataFrame
-# df_SPY = pd.read_csv('SPY_to_edit.csv')
-# df_TNX = pd.read_csv('TNX_to_edit.csv')
-
-
-
-
-# Create a MinMaxScaler instance for each DataFrame
+# Create MinMaxScaler instances for each DataFrame
 scaler1 = MinMaxScaler()
 scaler2 = MinMaxScaler()
 scaler3 = MinMaxScaler()
 
-
-
 # Normalize the numeric columns of each DataFrame
-df_EURUSD[['open','high','close','low']] = scaler1.fit_transform(df_EURUSD[['open','high','close','low']])
-df_SPY[['open','high','close','low','volume']] = scaler2.fit_transform(df_SPY[['open','high','close','low','volume']])
+df_EURUSD[['open', 'high', 'close', 'low']] = scaler1.fit_transform(df_EURUSD[['open', 'high', 'close', 'low']])
+df_SPY[['open', 'high', 'close', 'low', 'volume']] = scaler2.fit_transform(df_SPY[['open', 'high', 'close', 'low', 'volume']])
 df_TNX[['value']] = scaler3.fit_transform(df_TNX[['value']])
 
-# Save the DataFrame to a CSV file
-df_EURUSD.to_csv('EURUSD_after_norma.csv')
-df_SPY.to_csv('SPY_after_norma.csv')
-df_TNX.to_csv('TNX_after_norma.csv')
+# Save the DataFrame to CSV files after normalization
+df_EURUSD.to_csv('EURUSD_after_norm.csv')
+df_SPY.to_csv('SPY_after_norm.csv')
+df_TNX.to_csv('TNX_after_norm.csv')
 
-print("Length EURUS_df", len(df_EURUSD))
-print("Length SPY_df", len(df_SPY))
-print("Length TNX_df", len(df_TNX))
+print("Length EURUSD:", len(df_EURUSD))
+print("Length SPY:", len(df_SPY))
+print("Length TNX:", len(df_TNX))
+
 
 # Concatenate DataFrames and reset column names
 # merged_df = pd.concat([df_EURUSD, df_SPY, df_TNX], axis=1)
 # Concatenate DataFrames with MultiIndex columns
-merged_df = pd.concat([df_EURUSD, df_SPY, df_TNX], axis=1, keys=['EURUSD', 'SPY', 'TNX'])
+X = pd.concat([df_EURUSD, df_SPY, df_TNX], axis=1, keys=['EURUSD', 'SPY', 'TNX'])
 
-merged_df.to_csv("merged_df.csv")
-
-
-# # Flatten the column index
-# merged_df.columns = ['_'.join(col).strip() for col in merged_df.columns.values]
-
-# # Reset the index
-# merged_df.reset_index(inplace=True, drop=True)
-
-# # Save to a CSV file
-# merged_df.to_csv("merged_df_reset_index.csv")
-
-# # Rename the column to 'Date' for consistency
-# merged_df.columns = merged_df.columns.set_levels(['Date'], level=1)
-
-# # Set 'Date' column as the index
-# merged_df.set_index('Date', inplace=True)
+X.to_csv("merged_df.csv")
 
 
-# # Display the updated DataFrame
-# # print("merged_df:", merged_df.head())
-# merged_df.to_csv("merged_df_date.csv")
+# Flatten the column index
+X.columns = ['_'.join(col).strip() for col in X.columns.values]
+
+# Reset the index
+X.reset_index(inplace=True, drop=True)
+
+# Save to a CSV file
+X.to_csv("merged_df_reset_index.csv")
+
+# Set 'timestamp' column as the index
+X.set_index('EURUSD_timestamp', inplace=True)
+X = X.rename_axis('timestamp')
+# Drop the redundant timestamp columns
+X.drop(columns=['SPY_timestamp', 'TNX_timestamp'], inplace=True)
+
+X.to_csv("merged_df_final.csv")
 
 
 
+# Define your target variable (y),  in df_EURUSD
+y = df_EURUSD[['open','high','low','close']]
+# Rename columns in y DataFrame to match X DataFrame
+y.rename(columns={'open': 'EURUSD_open', 'high': 'EURUSD_high', 'low': 'EURUSD_low', 'close': 'EURUSD_close'}, inplace=True)
 
 
-
-# Define your input features (X) and target variable (y) for the entire OHLC bar
-# Assuming 'merged_df' has a multi-index for columns
-X = merged_df.loc[:, pd.IndexSlice[:, ['Open_lag_1', 'High_lag_1', 'Low_lag_1', 'Close_lag_1']]]
-# print(X.head())
-y = merged_df.loc[:, pd.IndexSlice[:, ['Open', 'High', 'Low', 'Close']]]
-# print(y.head())
-
-X.to_csv("X.csv")
-y.to_csv("y.csv")
-
-# Define the split ratios (adjust as needed)
+# Define the split ratios
 train_ratio = 0.7
 val_ratio = 0.15
 test_ratio = 0.15
 
+# Calculate the lengths of each split
+total_length = len(X)
+train_length = int(train_ratio * total_length)
+val_length = int(val_ratio * total_length)
+
 # Split the data
-X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=1 - train_ratio, random_state=42)
-X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=test_ratio / (test_ratio + val_ratio), random_state=42)
-
-# print("X_train shape:", X_train.shape)
-# print("y_train shape:", y_train.shape)
-# print(" y_temp shape:", y_temp.shape)
-# print("X_val shape:", X_val.shape)
-# print("X_test shape:", X_test.shape)
-# print("y_val shape:", y_val.shape)
-# print("y_test shape:", y_test.shape)
-
-
-
-# Split into train and test sets
-train_size = int(len(X) * 0.8)
-X_train, X_test = X[:train_size], X[train_size:]
-y_train, y_test = y[:train_size], y[train_size:]
-
-# print("X_train shape:", X_train.shape)
-# print("X_test shape:", X_test.shape)
-# print("y_train shape:", y_train.shape)
-# print("y_test shape:", y_test.shape)
-
-
-# print("Head of X_train:")
-# print(X_train.head())
-# X_train.to_csv("X_train.csv")
-
-# print("Head of X_test:")
-# print(X_test.head())
-
-# print("Head of y_train:")
-# print(y_train.head())
-
-# print("Head of y_test:")
-# print(y_test.head())
-
-print("X_train head:")
-print(X_train.head())
-print("y_train head:")
-print(y_train.head())
-print("y_temp head:")
-print(y_temp.head())
-print("X_val head:")
-print(X_val.head())
-print("X_test head:")
-print(X_test.head())
-print("y_val head:")
-print(y_val.head())
-print("y_test head:")
-print(y_test.head())
-
+X_train = X[:train_length]
+y_train = y[:train_length]
+X_val = X[train_length:train_length + val_length]
+y_val = y[train_length:train_length + val_length]
+X_test = X[train_length + val_length:]
+y_test = y[train_length + val_length:]
 
 
 # Create and compile the LSTM model
@@ -407,33 +304,25 @@ model.summary()
 # Reshape data for LSTM input
 X_train = X_train.values
 X_test = X_test.values
-# print("X_train shape:", X_train.shape)
-# print("X_test shape:", X_test.shape)
-print("X_train head:")
-print(X_train[:5])
-print("X_test head:")
-print(X_test[:5])
-
 X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
 X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
 
-# print("X_train shape:", X_train.shape)
-# print("X_test shape:", X_test.shape)
+# Check data types
+print("X_train data type:", X_train.dtype)
+print("Data Types of Columns in y_train:")
+print(y_train.dtypes)
 
-print("X_train head:")
-print(X_train[:5])
-print("X_test head:")
-print(X_test[:5])
+# Convert data types to float32 if needed
+X_train = X_train.astype('float32')
+y_train = y_train.astype('float32')
 
-# print("X_train:")
-# print(X_train[:5])  
-# print("")
-# print("Length of X_train:", len(X_train))
+# Check for NaN or infinity values
+if np.isnan(X_train).any() or np.isnan(y_train).any() or np.isinf(X_train).any() or np.isinf(y_train).any():
+    print("Data contains NaN or infinity values. Please preprocess your data to handle these issues.")
 
-# print("X_test:")
-# print(X_test[:5])  
-# print("")
-# print("Length of X_test:", len(X_test))
+# Check data shapes
+print("X_train shape:", X_train.shape)
+print("y_train shape:", y_train.shape)
 
 # Train the model
 model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=1)
