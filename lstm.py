@@ -37,7 +37,7 @@ def find_cut_off_datetimes(target_df, list_with_indicator_dfs):
     
     return start_datetime, stop_datetime
 
-def filter_out_data(start_datetime, stop_datetime, target_df, list_with_indicator_dfs):
+def cut_off_head_and_tail_of_data(start_datetime, stop_datetime, target_df, list_with_indicator_dfs):
     # Filter the target DataFrame
     target_df = target_df[(target_df['timestamp'] >= start_datetime) & (target_df['timestamp'] <= stop_datetime)]
     
@@ -50,49 +50,72 @@ def filter_out_data(start_datetime, stop_datetime, target_df, list_with_indicato
     return target_df, filtered_indicator_dfs
 
 
-def update_datetimes_so_they_are_aligned(target_df, list_with_indicator_dfs):
+def update_datetimes_so_they_are_aligned(target_df, indicator_df):
     # Get a set of unique timestamps from the target dataframe
     target_timestamps = set(target_df['timestamp'])
+    print("Length of target:", len(target_timestamps))
 
-    # Create a list to store modified indicator DataFrames
-    modified_indicator_dfs = []
 
-    # Iterate through the indicator dataframes
-    for indicator_df in list_with_indicator_dfs:
-        # Remove timestamps not present in target_df
-        indicator_df = indicator_df.copy()
-        indicator_df.drop(indicator_df[~indicator_df['timestamp'].isin(target_timestamps)].index, inplace=True)
-        modified_indicator_dfs.append(indicator_df)  # Append the modified copy
 
-    # Create a list to store indicators as lists of dictionaries
-    indicators_list_of_dicts = []
+    # Create a copy of the indicator DataFrame
+    modified_indicator_df = indicator_df.copy()
 
-    # Iterate through the indicator dataframes and convert to list of dicts
-    for indicator_df in modified_indicator_dfs:
-        indicator_dict_list = indicator_df.to_dict(orient='records')
-        indicators_list_of_dicts.append(indicator_dict_list)
+    # Remove timestamps not present in the target dataframe from modified_indicator_df
+    #   Create a boolean Series indicating whether each timestamp is in target_timestamps
+    is_in_target = modified_indicator_df['timestamp'].isin(target_timestamps)
 
-    # Iterate through the indicators and handle different keys
-    for i, indicator_dict_list in enumerate(indicators_list_of_dicts):
-        # Create a prototype empty dictionary based on the keys of the first element
-        prototype_dict = indicator_dict_list[0].copy()
-        for key in prototype_dict.keys():
-            prototype_dict[key] = None
+    #   Create a DataFrame containing only the rows where timestamps are NOT in target_timestamps
+    rows_to_drop = modified_indicator_df[~is_in_target]
 
-        # Find missing timestamps and add them to each indicator
-        missing_timestamps = target_timestamps - set([record['timestamp'] for record in indicator_dict_list])
-        for missing_timestamp in missing_timestamps:
-            new_record = prototype_dict.copy()
-            new_record['timestamp'] = new_record['timestamp'] = datetime(missing_timestamp.year, missing_timestamp.month, missing_timestamp.day)
-            indicator_dict_list.append(new_record)
+    #   Drop the rows from modified_indicator_df using the index of rows_to_drop
+    modified_indicator_df.drop(rows_to_drop.index, inplace=True)
 
-    # Convert the updated list of dicts back to dataframes
-    for i, indicator_df in enumerate(modified_indicator_dfs):
-        modified_indicator_dfs[i] = pd.DataFrame(indicators_list_of_dicts[i])
-        if len(list_with_indicator_dfs[i]) != len(target_timestamps):
-            raise ValueError("Length of indicator is not equal to the target")
+    print("Length of indicator before adding missing datetimes:",len( modified_indicator_df) )
 
-    return modified_indicator_dfs
+    # Extract the timestamps from the indicator DataFrame
+    indicator_timestamps = set(modified_indicator_df['timestamp'])
+
+    # Find missing timestamps
+    missing_timestamps = target_timestamps - indicator_timestamps
+    print("Missing timestamps:", missing_timestamps)
+    for missing_timestamp in missing_timestamps:
+        if missing_timestamp in indicator_timestamps:
+            print("Duplicate timestamp found:", missing_timestamp)
+
+    # Create a prototype empty dictionary based on the keys of the first element
+    prototype_dict = modified_indicator_df.iloc[0].copy().to_dict()
+    for key in prototype_dict.keys():
+        prototype_dict[key] = None
+
+    # Create records for missing timestamps and append them to the indicator DataFrame
+    missing_records = []
+    for missing_timestamp in missing_timestamps:
+        new_record = prototype_dict.copy()
+        new_record['timestamp'] = datetime(missing_timestamp.year, missing_timestamp.month, missing_timestamp.day)
+        missing_records.append(new_record)
+
+    # Append the missing records to the indicator DataFrame
+    if missing_records:
+        print("Length of missing records:", len(missing_records))
+        # Create a DataFrame from the list of dictionaries (missing_records)
+        missing_records_df = pd.DataFrame(missing_records)
+
+        # Concatenate the missing_records_df with the modified_indicator_df
+        modified_indicator_df = pd.concat([modified_indicator_df, missing_records_df], ignore_index=True)
+
+    modified_indicator_df.drop_duplicates(subset=['timestamp'], keep='first', inplace=True)
+
+    header = modified_indicator_df.columns.tolist()
+    print("Header:", header)
+
+    if len(modified_indicator_df.axes[0]) != len(target_timestamps):
+        raise ValueError("Length of indicator is not equal to the target")
+    
+    # Sort the DataFrame by timestamps in ascending order and reset the index
+    modified_indicator_df = modified_indicator_df.sort_values(by='timestamp').reset_index(drop=True)
+
+    return modified_indicator_df
+
 
 
 
@@ -175,10 +198,18 @@ df_EURUSD['timestamp'] = pd.to_datetime(df_EURUSD['timestamp'])
 df_SPY['timestamp'] = pd.to_datetime(df_SPY['timestamp'])
 df_TNX['timestamp'] = pd.to_datetime(df_TNX['timestamp'])
 
+# Drop duplicate rows with respect to the 'timestamp' column
+df_EURUSD.drop_duplicates(subset=['timestamp'], keep='first', inplace=True)
+df_SPY.drop_duplicates(subset=['timestamp'], keep='first', inplace=True)
+df_TNX.drop_duplicates(subset=['timestamp'], keep='first', inplace=True)
+
 # Sort ascending datetimes
 df_EURUSD = df_EURUSD.sort_values(by='timestamp', ascending=True)
 df_SPY = df_SPY.sort_values(by='timestamp', ascending=True)
 df_TNX = df_TNX.sort_values(by='timestamp', ascending=True)
+
+#Reset the index of df_EURUSD
+df_EURUSD.reset_index(drop=True, inplace=True)
 
 # Put the indicators in a list
 indicators = [df_SPY, df_TNX]
@@ -189,27 +220,32 @@ start_datetime, stop_datetime = find_cut_off_datetimes(df_EURUSD, indicators)
 print("start_datetime, stop_datetime:", start_datetime, stop_datetime)
 
 # Cut off the head and the tail of the timestamp columns
-df_EURUSD, indicators = filter_out_data(start_datetime, stop_datetime, df_EURUSD, indicators)
+df_EURUSD, indicators = cut_off_head_and_tail_of_data(start_datetime, stop_datetime, df_EURUSD, indicators)
+df_SPY = indicators[0]
+df_TNX = indicators[1]
 
 
 # Insert missing datetimes in the indicators and remove excess timestamps not in the target_df
-indicators = update_datetimes_so_they_are_aligned(df_EURUSD, indicators)
+df_SPY = update_datetimes_so_they_are_aligned(df_EURUSD, df_SPY)
+df_TNX = update_datetimes_so_they_are_aligned(df_EURUSD, df_TNX)
 
 # Clean the indicators from nonsense values
-df_SPY = clean_df_from_nonsense(indicators[0])
-df_TNX = clean_df_from_nonsense(indicators[1])
+df_SPY = clean_df_from_nonsense(df_SPY)
+df_TNX = clean_df_from_nonsense(df_TNX)
 
 
 # Sort ascending datetimes
 df_EURUSD = df_EURUSD.sort_values(by='timestamp', ascending=True)
 df_SPY = df_SPY.sort_values(by='timestamp', ascending=True)
 df_TNX = df_TNX.sort_values(by='timestamp', ascending=True)
+
 # Interpolate missing data in the indicators
 df_SPY = interpolate_missing_data(df_SPY)
 df_TNX = interpolate_missing_data(df_TNX)
 
 # Call the function for the "SPY" DataFrame
 df_SPY = interpolate_missing_data2(df_SPY)
+df_TNX = interpolate_missing_data2(df_TNX)
 
 # Reset index
 df_EURUSD.reset_index(drop=True, inplace=True)
@@ -269,10 +305,11 @@ X.to_csv("merged_df_final.csv")
 
 
 # Define your target variable (y),  in df_EURUSD
-y = df_EURUSD[['open','high','low','close']]
+y = df_EURUSD[['timestamp','open','high','low','close']]
 # Rename columns in y DataFrame to match X DataFrame
 y.rename(columns={'open': 'EURUSD_open', 'high': 'EURUSD_high', 'low': 'EURUSD_low', 'close': 'EURUSD_close'}, inplace=True)
-
+y.set_index('timestamp',inplace=True)
+y.to_csv("y.csv")
 
 # Define the split ratios
 train_ratio = 0.7
@@ -312,12 +349,12 @@ print("X_train data type:", X_train.dtype)
 print("Data Types of Columns in y_train:")
 print(y_train.dtypes)
 
-# Convert data types to float32 if needed
-X_train = X_train.astype('float32')
-y_train = y_train.astype('float32')
+# # Convert data types to float32 if needed
+# X_train = X_train.astype('float32')
+# y_train = y_train.astype('float32')
 
 # Check for NaN or infinity values
-if np.isnan(X_train).any() or np.isnan(y_train).any() or np.isinf(X_train).any() or np.isinf(y_train).any():
+if np.isnan(X_train).any().any() or np.isnan(y_train).any().any() or np.isinf(X_train).any().any() or np.isinf(y_train).any().any():
     print("Data contains NaN or infinity values. Please preprocess your data to handle these issues.")
 
 # Check data shapes
@@ -330,11 +367,11 @@ model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=1)
 # Initialize a list to store predicted bars
 predicted_bars = []
 
-# Create a MinMaxScaler instance for your target variable (y)
-scaler = MinMaxScaler()
+# # Create a MinMaxScaler instance for your target variable (y)
+# scaler = MinMaxScaler()
 
 # Fit the scaler on your training target variable (y_train)
-scaler.fit(y_train)
+scaler1.fit(y_train)
 
 # Make predictions on the test set
 for i in range(len(X_test)):
@@ -344,12 +381,15 @@ for i in range(len(X_test)):
 
 
     # Reshape y_pred to match the shape of your target variable (OHLC)
-    y_pred = y_pred.reshape(1, 4)  # Assuming you are predicting OHLC
+    y_pred = y_pred.reshape(1, 4)  # Assuming you are predicting OHLC with the datetimes
     print("y_pred shape:", y_pred.shape)
 
 
     # Inverse transform the predictions
-    y_pred = scaler.inverse_transform(y_pred)
+    # Inverse transform the predictions for OHLC values (columns 1 to 4)
+    #y_pred[:, 1:5] = scaler1.inverse_transform(y_pred[:, 1:5])
+    y_pred = scaler1.inverse_transform(y_pred)
+
     print("y_pred shape:", y_pred.shape)
 
     
@@ -357,16 +397,34 @@ for i in range(len(X_test)):
 
 
 # Convert the list of predicted bars to a NumPy array
-predicted_bars = np.array(predicted_bars)
+# Assuming predicted_bars has columns in this order: timestamp, open, high, low, close
+#predicted_bars_df = pd.DataFrame(predicted_bars, columns=['timestamp', 'open', 'high', 'low', 'close'])
+predicted_bars_df = pd.DataFrame(predicted_bars, columns=['open', 'high', 'low', 'close'])
 
 
 # Calculate RMSE
-rmse = np.sqrt(mean_squared_error(y_test, predicted_bars))
+# Convert the list of predicted bars to a NumPy array
+rmse = np.sqrt(mean_squared_error(y_test, predicted_bars_df))
 print(f'Root Mean Squared Error: {rmse}')
 
 # Prepare data for candlestick chart
+y_test[:, 1:5] = scaler1.inverse_transform(y_test[:, 1:5])
 ohlc_actual = y_test
+ohlc_actual.rename(columns={
+    'EURUSD_open': 'open',
+    'EURUSD_high': 'high',
+    'EURUSD_low': 'low',
+    'EURUSD_close': 'close'
+}, inplace=True)
 ohlc_predicted = predicted_bars
+
+print("Data type of y_test:", y_test.dtypes)
+print("Data type of predicted_bars:", predicted_bars.dtype)
+
+y_test.to_csv("y_test:csv")
+predicted_bars_df.to_csv("predicted_bars.csv")
+
+
 
 # Create candlestick chart for actual and predicted OHLC bars
 fig, ax = plt.subplots(figsize=(12, 6))
